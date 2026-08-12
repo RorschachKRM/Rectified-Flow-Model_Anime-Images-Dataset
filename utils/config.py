@@ -1,0 +1,69 @@
+from __future__ import annotations
+
+from copy import deepcopy
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def load_config(config_path: str | Path = "config/default.yaml") -> dict[str, Any]:
+    """读取 YAML 配置，并把项目内路径解析为绝对路径。"""
+    path = Path(config_path)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    if not path.is_file():
+        raise FileNotFoundError(f"找不到配置文件: {path}")
+
+    with path.open("r", encoding="utf-8") as file:
+        config = yaml.safe_load(file)
+    if not isinstance(config, dict):
+        raise ValueError(f"配置文件必须是 YAML 映射: {path}")
+
+    config = deepcopy(config)
+    config["_config_path"] = str(path)
+    for section, keys in {
+        "data": ("raw_dir", "split_dir"),
+        "paths": (
+            "output_dir",
+            "checkpoint_dir",
+            "sample_dir",
+            "plot_dir",
+            "log_dir",
+        ),
+    }.items():
+        for key in keys:
+            value = Path(config[section][key])
+            config[section][key] = str(value if value.is_absolute() else PROJECT_ROOT / value)
+
+    validate_config(config)
+    return config
+
+
+def validate_config(config: dict[str, Any]) -> None:
+    ratios = [config["data"][f"{name}_ratio"] for name in ("train", "val", "test")]
+    if any(ratio <= 0 for ratio in ratios) or abs(sum(ratios) - 1.0) > 1e-8:
+        raise ValueError("train_ratio、val_ratio、test_ratio 必须大于 0 且总和为 1")
+    if config["data"]["image_size"] % (2 ** (len(config["model"]["channel_multipliers"]) - 1)):
+        raise ValueError("image_size 必须能被 U-Net 的总下采样倍数整除")
+    if config["model"]["in_channels"] != config["model"]["out_channels"]:
+        raise ValueError("Rectified Flow 的输入和输出通道数必须相同")
+    if config["sampling"]["num_steps"] <= 0:
+        raise ValueError("sampling.num_steps 必须大于 0")
+    if config["sampling"]["num_samples"] <= 0:
+        raise ValueError("sampling.num_samples 必须大于 0")
+    if not 1 <= config["sampling"]["trajectory_samples"] <= config["sampling"]["num_samples"]:
+        raise ValueError("trajectory_samples 必须位于 1 和 num_samples 之间")
+    if config["training"]["log_every_steps"] <= 0:
+        raise ValueError("training.log_every_steps 必须大于 0")
+    for key in ("validate_every_epochs", "sample_every_epochs", "save_every_epochs"):
+        if config["training"][key] <= 0:
+            raise ValueError(f"training.{key} 必须大于 0")
+
+
+def ensure_directories(config: dict[str, Any]) -> None:
+    for path in config["paths"].values():
+        Path(path).mkdir(parents=True, exist_ok=True)

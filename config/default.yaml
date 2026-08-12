@@ -1,0 +1,52 @@
+project:
+  name: rectified-flow-anime
+  seed: 42
+
+data:
+  raw_dir: Data/train/nolabel
+  split_dir: datasets/splits
+  image_size: 64
+  train_ratio: 0.90
+  val_ratio: 0.05
+  test_ratio: 0.05
+  remove_exact_duplicates: true
+  split_seed: 42
+  auto_prepare: true
+  horizontal_flip: true
+  num_workers: 4
+
+model:
+  in_channels: 3
+  out_channels: 3
+  base_channels: 64
+  channel_multipliers: [1, 2, 4, 4]
+  num_res_blocks: 2
+  time_embedding_dim: 256
+  dropout: 0.0
+
+training:
+  device: auto
+  epochs: 100
+  batch_size: 16
+  learning_rate: 0.0002
+  weight_decay: 0.0001
+  mixed_precision: true
+  gradient_clip: 1.0
+  log_every_steps: 50
+  validate_every_epochs: 1
+  sample_every_epochs: 5
+  save_every_epochs: 10
+  resume: true
+
+sampling:
+  num_steps: 100
+  num_samples: 16
+  trajectory_frames: 9
+  trajectory_samples: 8
+
+paths:
+  output_dir: outputs
+  checkpoint_dir: outputs/checkpoints
+  sample_dir: outputs/samples
+  plot_dir: outputs/plots
+  log_dir: runs/rectified_flow

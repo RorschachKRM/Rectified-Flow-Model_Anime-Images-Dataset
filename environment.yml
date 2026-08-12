@@ -1,0 +1,10 @@
+name: code
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      # CUDA 版 torch/torchvision 保留 code 环境中现有版本；这里只安装项目工具包。
+      - -r requirements.txt

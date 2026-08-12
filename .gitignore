@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.idea/
+.vscode/
+
+# 原始数据、自动生成的数据清单及训练产物
+Data/
+datasets/splits/
+outputs/
+runs/
+
+# 模型权重
+*.pt
+*.pth
+*.ckpt
