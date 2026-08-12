@@ -32,7 +32,91 @@ loss = MSE(v_theta(xt, t), x1 - x0)
 x <- x + dt * v_theta(x, t)
 ```
 
-## 2. 项目结构
+## 2. U-Net 网络设计
+
+模型不是直接预测最终图片，而是接收插值状态 `x_t` 和时间 `t`，输出与图片形状相同的速度场 `v_theta(x_t, t)`。默认输入输出均为 `[B, 3, 64, 64]`，可训练参数约为 23.72M。
+
+默认配置：
+
+```yaml
+model:
+  in_channels: 3
+  out_channels: 3
+  base_channels: 64
+  channel_multipliers: [1, 2, 4, 4]
+  num_res_blocks: 2
+  time_embedding_dim: 256
+  dropout: 0.0
+```
+
+整体结构：
+
+```text
+x_t: [B, 3, 64, 64]
+        │
+        ▼
+3×3 Conv → [B, 64, 64, 64]
+        │
+        ├── Encoder level 0: 2×ResBlock, 64 ch, 64×64
+        │                    ↓ 3×3 stride-2 Conv
+        ├── Encoder level 1: 2×ResBlock, 128 ch, 32×32
+        │                    ↓ 3×3 stride-2 Conv
+        ├── Encoder level 2: 2×ResBlock, 256 ch, 16×16
+        │                    ↓ 3×3 stride-2 Conv
+        └── Encoder level 3: 2×ResBlock, 256 ch, 8×8
+                             │
+                             ▼
+                  Middle: 2×ResBlock, 256 ch
+                             │
+                             ▼
+        ┌── Decoder level 3: 3×ResBlock, 256 ch, 8×8
+        │                    ↑ nearest interpolation + 3×3 Conv
+        ├── Decoder level 2: 3×ResBlock, 256 ch, 16×16
+        │                    ↑ nearest interpolation + 3×3 Conv
+        ├── Decoder level 1: 3×ResBlock, 128 ch, 32×32
+        │                    ↑ nearest interpolation + 3×3 Conv
+        └── Decoder level 0: 3×ResBlock, 64 ch, 64×64
+                             │
+                             ▼
+              GroupNorm → SiLU → 3×3 Conv
+                             │
+                             ▼
+                 v_theta: [B, 3, 64, 64]
+```
+
+编码器每个分辨率层包含 2 个残差块，并在层与层之间使用 `3×3、stride=2` 卷积下采样。解码器从编码器保存的特征中按相反顺序取出 skip connection，与当前特征在通道维拼接；每个分辨率层使用 3 个残差块，以消费对应层的跳跃特征。上采样采用最近邻插值，再接一个 `3×3` 卷积。
+
+单个带时间条件的残差块结构为：
+
+```text
+主分支：
+x → GroupNorm → SiLU → 3×3 Conv
+  → 加入 Linear(SiLU(time_embedding))[:, :, None, None]
+  → GroupNorm → SiLU → Dropout → 3×3 Conv
+
+捷径分支：
+x → Identity                         （输入输出通道相同）
+x → 1×1 Conv                         （输入输出通道不同）
+
+输出 = 主分支 + 捷径分支
+```
+
+`GroupNorm` 最多使用 32 组；若通道数不能被 32 整除，会自动减少组数。默认 `dropout=0.0`，因此 Dropout 层不会丢弃特征。
+
+时间 `t` 先经过 64 维正弦/余弦位置编码，然后由两层 MLP 映射为 256 维：
+
+```text
+t → SinusoidalEmbedding(64)
+  → Linear(64, 256)
+  → SiLU
+  → Linear(256, 256)
+```
+
+同一个时间嵌入会通过各残差块独立的线性层投影到相应通道数，并以逐通道偏置的方式加入卷积特征。这样网络能够根据当前时间位置预测不同的速度场。
+
+最后一个 `3×3` 输出卷积使用全零权重和偏置初始化，使模型训练开始时预测接近零速度。当前 V1.0 没有使用 self-attention、类别条件或文本条件，重点保持网络简单并验证 Rectified Flow 的基本流程。
+
+## 3. 项目结构
 
 ```text
 .
@@ -55,7 +139,7 @@ x <- x + dt * v_theta(x, t)
 └── requirements.txt
 ```
 
-## 3. 配置 Conda 环境
+## 4. 配置 Conda 环境
 
 建议安装：
 
@@ -89,7 +173,7 @@ python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 
 也可以从 `终端 → 运行任务` 执行“检查 GPU 环境”“运行单元测试”“训练 Rectified Flow”和“启动 TensorBoard”。
 
-## 4. 数据准备
+## 5. 数据准备
 
 默认图片目录为：
 
@@ -117,7 +201,7 @@ python -m datasets.split_dataset --config config/default.yaml
 python -m datasets.split_dataset --config config/default.yaml --force
 ```
 
-## 5. 训练
+## 6. 训练
 
 所有主要参数都位于 `config/default.yaml`。默认 batch size 为 16；显存不足时可以调低该值。
 
@@ -153,7 +237,7 @@ training:
 
 必要时再将 `model.base_channels` 从 64 改为 48 或 32。网络结构改变后，旧 checkpoint 将不能继续加载。
 
-## 6. TensorBoard 展示
+## 7. TensorBoard 展示
 
 另开一个已激活项目 Conda 环境的终端启动：
 
@@ -185,7 +269,7 @@ sampling:
   trajectory_samples: 8
 ```
 
-## 7. 独立生成图片
+## 8. 独立生成图片
 
 训练出 `best.pt` 后执行：
 
@@ -201,7 +285,7 @@ python sample.py --seed 123 --num-samples 16 --num-steps 100
 
 独立采样同样会向 TensorBoard 写入最终图片和生成轨迹。
 
-## 8. 测试集评估
+## 9. 测试集评估
 
 ```powershell
 python evaluate.py --config config/default.yaml
@@ -209,7 +293,7 @@ python evaluate.py --config config/default.yaml
 
 这里计算的是测试集 flow-matching MSE。生成模型的 loss 不能完整代表视觉质量，因此还需要结合固定噪声生成样本观察训练过程。
 
-## 9. 单元测试
+## 10. 单元测试
 
 ```powershell
 python -m pytest -q
@@ -217,7 +301,7 @@ python -m pytest -q
 
 测试覆盖 U-Net 输入输出形状、时间输入校验、欧拉积分方向和数据划分计数。它们用于快速检查代码连接，不代替完整训练。
 
-## 10. V1.0 范围
+## 11. V1.0 范围
 
 当前版本刻意保持简单：
 
@@ -231,3 +315,14 @@ python -m pytest -q
 - 无注意力和 FID。
 
 后续确认 V1 能稳定训练并生成合理头像后，再考虑加入 EMA、attention、Heun 求解器、FID 或 reflow。
+
+
+## 12. 实际生成效果
+
+下面的示例使用训练完成后的 `best.pt`，通过 100 步欧拉法生成：
+
+| Seed 123 | Seed 456 |
+|:---:|:---:|
+| ![Seed 123 生成结果](IMG/sample_seed_123.png) | ![Seed 456 生成结果](IMG/sample_seed_456.png) |
+
+可见模型稚嫩，效果并不好。
