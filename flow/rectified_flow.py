@@ -5,7 +5,7 @@ from torch import nn
 
 
 class RectifiedFlow:
-    """V1 Rectified Flow：直线路径、速度匹配与前向欧拉求解。"""
+    """Rectified Flow：直线路径、速度匹配与数值积分采样。"""
 
     def __init__(self, model: nn.Module) -> None:
         self.model = model
@@ -27,12 +27,15 @@ class RectifiedFlow:
         noise: torch.Tensor,
         num_steps: int,
         trajectory_frames: int = 0,
+        solver: str = "heun",
     ) -> tuple[torch.Tensor, list[torch.Tensor]]:
-        """从 t=0 的高斯噪声出发，用前向欧拉法积分到 t=1。"""
+        """从 t=0 的高斯噪声出发，用指定求解器积分到 t=1。"""
         if num_steps <= 0:
             raise ValueError("num_steps 必须大于 0")
         if trajectory_frames < 0:
             raise ValueError("trajectory_frames 不能为负数")
+        if solver not in {"euler", "heun"}:
+            raise ValueError("solver 必须是 'euler' 或 'heun'")
 
         sample = noise.clone()
         step_size = 1.0 / num_steps
@@ -45,7 +48,13 @@ class RectifiedFlow:
                 (sample.shape[0],), time_value, device=sample.device, dtype=sample.dtype
             )
             velocity = self.model(sample, time)
-            sample = sample + step_size * velocity
+            if solver == "euler":
+                sample = sample + step_size * velocity
+            else:
+                predicted_sample = sample + step_size * velocity
+                next_time = torch.full_like(time, (step + 1) / num_steps)
+                predicted_velocity = self.model(predicted_sample, next_time)
+                sample = sample + 0.5 * step_size * (velocity + predicted_velocity)
             if step + 1 in record_steps:
                 trajectory.append(sample.detach().cpu())
         return sample, trajectory

@@ -106,6 +106,7 @@ def generate_preview(
             fixed_noise,
             num_steps=int(sample_config["num_steps"]),
             trajectory_frames=int(sample_config["trajectory_frames"]),
+            solver=str(sample_config["solver"]),
         )
     sample_path = Path(config["paths"]["sample_dir"]) / f"epoch_{epoch:04d}.png"
     save_sample_grid(samples, sample_path)
@@ -138,6 +139,12 @@ def run_training(config: dict[str, Any]) -> None:
         lr=float(training_config["learning_rate"]),
         weight_decay=float(training_config["weight_decay"]),
     )
+    scheduler_config = training_config["scheduler"]
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=int(training_config["epochs"]),
+        eta_min=float(scheduler_config["min_learning_rate"]),
+    )
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     writer = SummaryWriter(log_dir=config["paths"]["log_dir"])
 
@@ -148,11 +155,15 @@ def run_training(config: dict[str, Any]) -> None:
     best_val_loss = math.inf
     history: dict[str, list[float]] = {"train": [], "val": []}
     if bool(training_config["resume"]) and latest_path.is_file():
-        checkpoint = load_checkpoint(latest_path, model, device, optimizer, scaler)
+        checkpoint = load_checkpoint(
+            latest_path, model, device, optimizer, scaler, scheduler
+        )
         start_epoch = int(checkpoint["epoch"]) + 1
         global_step = int(checkpoint.get("global_step", 0))
         best_val_loss = float(checkpoint.get("best_val_loss", math.inf))
         history = checkpoint.get("history", history)
+        if "scheduler" not in checkpoint:
+            print("旧 checkpoint 不含调度器状态，余弦学习率将从当前学习率开始")
         print(f"从 {latest_path} 恢复，将从第 {start_epoch} 个 epoch 继续")
 
     noise_generator = torch.Generator(device=device).manual_seed(
@@ -199,6 +210,11 @@ def run_training(config: dict[str, Any]) -> None:
             if epoch % int(training_config["sample_every_epochs"]) == 0:
                 generate_preview(flow, fixed_noise, config, epoch, writer, use_amp)
 
+            scheduler.step()
+            writer.add_scalar(
+                "training/learning_rate_epoch", scheduler.get_last_lr()[0], epoch
+            )
+
             if should_validate and val_loss < best_val_loss:
                 best_val_loss = val_loss
                 save_checkpoint(
@@ -210,6 +226,7 @@ def run_training(config: dict[str, Any]) -> None:
                     global_step,
                     best_val_loss,
                     history,
+                    scheduler,
                 )
             save_checkpoint(
                 latest_path,
@@ -220,6 +237,7 @@ def run_training(config: dict[str, Any]) -> None:
                 global_step,
                 best_val_loss,
                 history,
+                scheduler,
             )
             if epoch % int(training_config["save_every_epochs"]) == 0:
                 save_checkpoint(
@@ -231,6 +249,7 @@ def run_training(config: dict[str, Any]) -> None:
                     global_step,
                     best_val_loss,
                     history,
+                    scheduler,
                 )
 
             plot_loss_curves(history, Path(config["paths"]["plot_dir"]) / "loss_curve.png")

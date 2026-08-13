@@ -326,3 +326,36 @@ python -m pytest -q
 | ![Seed 123 生成结果](IMG/sample_seed_123.png) | ![Seed 456 生成结果](IMG/sample_seed_456.png) |
 
 可见模型稚嫩，效果并不好。
+
+## V1.1 更新日志
+
+V1.1 保持原有 U-Net、Rectified Flow 训练目标和现有模型权重不变，只完成以下三项更新：
+
+1. **加入学习率调度器**
+   - 训练由固定学习率改为 `CosineAnnealingLR` 余弦退火；
+   - 初始学习率仍为 `0.0002`，最低学习率为 `0.000001`；
+   - checkpoint 会保存和恢复调度器状态；
+   - V1.0 checkpoint 没有调度器状态时仍可正常加载。
+
+2. **将默认采样算法替换为 Heun 法**
+   - 默认采样器由一阶 Euler 改为二阶 Heun；
+   - 默认采样步数由 100 调整为 50，每一步使用起点和预测终点的平均速度进行修正；
+   - 原来的 Euler 实现继续保留，可通过 `--solver euler` 用于对照；
+   - 已有 V1.0 `best.pt` 可以直接使用 Heun 采样，无需重新训练。
+
+3. **修改 Batch Size**
+   - 默认训练 Batch Size 由 16 调整为 32；
+   - 不改变模型结构、损失函数和数据集划分。
+
+V1.1 默认采样命令：
+
+```powershell
+python sample.py --config config/default.yaml
+```
+
+手动指定求解器和采样步数：
+
+```powershell
+python sample.py --solver heun --num-steps 50 --seed 123
+python sample.py --solver euler --num-steps 100 --seed 123
+```

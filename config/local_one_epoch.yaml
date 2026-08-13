@@ -27,8 +27,11 @@ model:
 training:
   device: auto
   epochs: 1
-  batch_size: 16
+  batch_size: 32
   learning_rate: 0.0002
+  scheduler:
+    name: cosine
+    min_learning_rate: 0.000001
   weight_decay: 0.0001
   mixed_precision: true
   gradient_clip: 1.0
@@ -39,7 +42,8 @@ training:
   resume: true
 
 sampling:
-  num_steps: 100
+  solver: heun
+  num_steps: 50
   num_samples: 16
   trajectory_frames: 9
   trajectory_samples: 8

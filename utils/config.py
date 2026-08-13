@@ -53,12 +53,19 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("Rectified Flow 的输入和输出通道数必须相同")
     if config["sampling"]["num_steps"] <= 0:
         raise ValueError("sampling.num_steps 必须大于 0")
+    if config["sampling"]["solver"] not in {"euler", "heun"}:
+        raise ValueError("sampling.solver 必须是 euler 或 heun")
     if config["sampling"]["num_samples"] <= 0:
         raise ValueError("sampling.num_samples 必须大于 0")
     if not 1 <= config["sampling"]["trajectory_samples"] <= config["sampling"]["num_samples"]:
         raise ValueError("trajectory_samples 必须位于 1 和 num_samples 之间")
     if config["training"]["log_every_steps"] <= 0:
         raise ValueError("training.log_every_steps 必须大于 0")
+    scheduler = config["training"]["scheduler"]
+    if scheduler["name"] != "cosine":
+        raise ValueError("training.scheduler.name 目前只支持 cosine")
+    if not 0 <= scheduler["min_learning_rate"] < config["training"]["learning_rate"]:
+        raise ValueError("min_learning_rate 必须大于等于 0 且小于 learning_rate")
     for key in ("validate_every_epochs", "sample_every_epochs", "save_every_epochs"):
         if config["training"][key] <= 0:
             raise ValueError(f"training.{key} 必须大于 0")

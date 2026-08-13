@@ -14,14 +14,40 @@ class ConstantVelocity(nn.Module):
         return torch.full_like(x, self.velocity)
 
 
-def test_euler_solver_moves_in_positive_time_direction() -> None:
+def test_heun_solver_moves_in_positive_time_direction() -> None:
     flow = RectifiedFlow(ConstantVelocity(2.0))
     noise = torch.zeros(2, 3, 4, 4)
-    samples, trajectory = flow.sample(noise, num_steps=10, trajectory_frames=3)
+    samples, trajectory = flow.sample(
+        noise, num_steps=10, trajectory_frames=3, solver="heun"
+    )
 
     assert torch.allclose(samples, torch.full_like(samples, 2.0), atol=1e-6)
     assert len(trajectory) == 3
     assert torch.equal(trajectory[0], noise)
+
+
+def test_heun_uses_end_of_step_velocity() -> None:
+    class TimeVelocity(nn.Module):
+        def forward(self, x: torch.Tensor, time: torch.Tensor) -> torch.Tensor:
+            del x
+            return time[:, None, None, None]
+
+    flow = RectifiedFlow(TimeVelocity())
+    noise = torch.zeros(1, 1, 1, 1)
+    samples, _ = flow.sample(noise, num_steps=10, solver="heun")
+
+    assert torch.allclose(samples, torch.full_like(samples, 0.5), atol=1e-6)
+
+
+def test_sample_rejects_unknown_solver() -> None:
+    flow = RectifiedFlow(ConstantVelocity(1.0))
+
+    try:
+        flow.sample(torch.zeros(1, 1, 1, 1), num_steps=1, solver="unknown")
+    except ValueError as error:
+        assert "solver" in str(error)
+    else:
+        raise AssertionError("未知求解器应抛出 ValueError")
 
 
 def test_training_loss_is_a_finite_scalar() -> None:
