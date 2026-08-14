@@ -10,11 +10,25 @@ class RectifiedFlow:
     def __init__(self, model: nn.Module) -> None:
         self.model = model
 
-    def training_loss(self, real_images: torch.Tensor) -> torch.Tensor:
+    def training_loss(
+        self,
+        real_images: torch.Tensor,
+        generator: torch.Generator | None = None,
+    ) -> torch.Tensor:
         """拟合直线路径 x_t=(1-t)x_0+t*x_1 的常速度 x_1-x_0。"""
         x1 = real_images
-        x0 = torch.randn_like(x1)
-        time = torch.rand(x1.shape[0], device=x1.device, dtype=x1.dtype)
+        x0 = torch.randn(
+            x1.shape,
+            device=x1.device,
+            dtype=x1.dtype,
+            generator=generator,
+        )
+        time = torch.rand(
+            x1.shape[0],
+            device=x1.device,
+            dtype=x1.dtype,
+            generator=generator,
+        )
         time_view = time.view(-1, 1, 1, 1)
         xt = (1.0 - time_view) * x0 + time_view * x1
         target_velocity = x1 - x0

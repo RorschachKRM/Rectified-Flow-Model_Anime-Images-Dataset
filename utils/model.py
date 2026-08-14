@@ -14,9 +14,12 @@ def build_model(config: dict[str, Any], device: torch.device) -> UNet:
 
 
 def load_flow_for_inference(
-    config: dict[str, Any], checkpoint_path: str, device: torch.device
+    config: dict[str, Any],
+    checkpoint_path: str,
+    device: torch.device,
+    use_ema: bool = True,
 ) -> tuple[UNet, RectifiedFlow]:
     model = build_model(config, device)
-    load_checkpoint(checkpoint_path, model, device)
+    load_checkpoint(checkpoint_path, model, device, use_ema=use_ema)
     model.eval()
     return model, RectifiedFlow(model)

@@ -359,3 +359,63 @@ python sample.py --config config/default.yaml
 python sample.py --solver heun --num-steps 50 --seed 123
 python sample.py --solver euler --num-steps 100 --seed 123
 ```
+
+## V1.2 更新日志
+
+V1.2 在 V1.1 的训练与采样流程上增加以下能力：
+
+1. **Scale-Shift 时间调制**
+   - 残差块的时间投影由单一通道偏置改为 `scale` 和 `shift`；
+   - 第二个 GroupNorm 的输出按 `h * (1 + scale) + shift` 调制；
+   - 该修改改变了模型参数形状，因此 V1.2 需要重新训练。
+
+2. **EMA 模型**
+   - 使用 `ema_decay: 0.9999` 为每次有效优化器更新维护指数移动平均权重；
+   - checkpoint 同时保存普通模型和 EMA 模型；
+   - 训练预览、独立生成和质量评估默认优先使用 EMA 权重；
+   - 可向 `sample.py` 或 `evaluate.py` 传入 `--model-weights`，改用普通模型权重。
+
+3. **pHash 近似去重**
+   - SHA-256 精确去重之后，继续使用 pHash 检测重新压缩、轻微改色和中心裁剪版本；
+   - 使用 BK-tree 检索相近哈希，避免对全部图片执行两两比较；
+   - 只从数据清单中排除重复副本，不删除 `Data` 中的原始图片；
+   - 去重详情保存到 `datasets/splits_v1_2/dedup_report.json`。
+
+4. **可复现质量评估**
+   - 训练预览使用固定噪声；
+   - validation/test flow MSE 使用固定的高斯噪声和时间采样；
+   - `evaluate.py` 默认使用 EMA 权重计算测试集 flow MSE、FID 和 KID；
+   - 指标和评估条件保存到 `outputs/v1_2/evaluation/metrics.json`；
+   - V1.2 使用独立的数据清单、checkpoint、样本和 TensorBoard 目录，不覆盖 V1.1 产物。
+
+新增依赖安装：
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+重新生成带感知去重的数据清单：
+
+```powershell
+python -m datasets.split_dataset --config config/default.yaml --force
+```
+
+运行质量评估：
+
+```powershell
+python evaluate.py --config config/default.yaml
+```
+
+### V1.2 实际生成效果
+
+| 训练最终生成结果 | 从噪声到图片的最终生成轨迹 |
+|:---:|:---:|
+| ![V1.2 训练最终生成结果](<outputs/v1_2/samples/train final.png>) | ![V1.2 从噪声到图片的最终生成轨迹](<outputs/v1_2/samples/train final noise_to_image_trajectory.png>) |
+
+下面的示例使用 V1.2 训练完成后的 `best.pt`，默认加载 EMA 权重，并通过 50 步 Heun 法生成：
+
+| Seed 123 | Seed 456 |
+|:---:|:---:|
+| ![V1.2 Seed 123 生成结果](outputs/v1_2/samples/final_seed_123.png) | ![V1.2 Seed 456 生成结果](outputs/v1_2/samples/final_seed_456.png) |
+
+

@@ -1,15 +1,19 @@
 project:
-  name: rectified-flow-anime
+  name: rectified-flow-anime-v1.2
   seed: 42
 
 data:
   raw_dir: Data/train/nolabel
-  split_dir: datasets/splits
+  split_dir: datasets/splits_v1_2
   image_size: 64
   train_ratio: 0.90
   val_ratio: 0.05
   test_ratio: 0.05
   remove_exact_duplicates: true
+  remove_near_duplicates: true
+  phash_size: 8
+  phash_threshold: 4
+  phash_crop_ratios: [0.9]
   split_seed: 42
   auto_prepare: true
   horizontal_flip: true
@@ -32,6 +36,7 @@ training:
   scheduler:
     name: cosine
     min_learning_rate: 0.000001
+  ema_decay: 0.9999
   weight_decay: 0.0001
   mixed_precision: true
   gradient_clip: 1.0
@@ -48,9 +53,21 @@ sampling:
   trajectory_frames: 9
   trajectory_samples: 8
 
+evaluation:
+  preview_seed: 42
+  validation_seed: 2026
+  generation_seed: 2026
+  metric_seed: 2026
+  batch_size: 32
+  calculate_fid: true
+  calculate_kid: true
+  kid_subsets: 50
+  kid_subset_size: 500
+
 paths:
-  output_dir: outputs
-  checkpoint_dir: outputs/checkpoints
-  sample_dir: outputs/samples
-  plot_dir: outputs/plots
-  log_dir: runs/rectified_flow
+  output_dir: outputs/v1_2
+  checkpoint_dir: outputs/v1_2/checkpoints
+  sample_dir: outputs/v1_2/samples
+  plot_dir: outputs/v1_2/plots
+  evaluation_dir: outputs/v1_2/evaluation
+  log_dir: runs/rectified_flow_v1_2

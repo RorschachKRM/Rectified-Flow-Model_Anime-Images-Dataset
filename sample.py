@@ -19,6 +19,11 @@ def main() -> None:
     parser.add_argument("--num-samples", type=int, default=None)
     parser.add_argument("--num-steps", type=int, default=None)
     parser.add_argument("--solver", choices=("euler", "heun"), default=None)
+    parser.add_argument(
+        "--model-weights",
+        action="store_true",
+        help="使用普通模型权重；默认优先使用 EMA 权重",
+    )
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
@@ -29,7 +34,9 @@ def main() -> None:
     seed_everything(seed)
     device = resolve_device(str(config["training"]["device"]))
     checkpoint = args.checkpoint or str(Path(config["paths"]["checkpoint_dir"]) / "best.pt")
-    _, flow = load_flow_for_inference(config, checkpoint, device)
+    _, flow = load_flow_for_inference(
+        config, checkpoint, device, use_ema=not args.model_weights
+    )
 
     sample_config = config["sampling"]
     num_samples = args.num_samples or int(sample_config["num_samples"])
@@ -61,7 +68,11 @@ def main() -> None:
             global_step=seed,
             trajectory_samples=min(int(sample_config["trajectory_samples"]), num_samples),
         )
-    print(f"生成图片已保存到: {output}（求解器: {solver}，步数: {num_steps}）")
+    weights_name = "普通模型" if args.model_weights else "EMA"
+    print(
+        f"生成图片已保存到: {output}"
+        f"（权重: {weights_name}，求解器: {solver}，步数: {num_steps}）"
+    )
 
 
 if __name__ == "__main__":

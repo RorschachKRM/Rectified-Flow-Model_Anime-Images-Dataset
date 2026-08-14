@@ -1,6 +1,7 @@
 # PyTorch 和 torchvision 已由 code Conda 环境提供，不在这里重复安装。
 PyYAML>=6.0,<7
 Pillow>=11,<13
+ImageHash>=4.3,<5
 matplotlib>=3.10,<4
 python-dateutil>=2.9,<3
 tensorboard>=2.20,<3
@@ -9,3 +10,5 @@ decorator==4.4.2
 requests>=2.32,<3
 tqdm>=4.67,<5
 pytest>=8.4,<9
+torchmetrics>=1.8,<2
+torch-fidelity>=0.3,<0.4

@@ -61,3 +61,20 @@ def test_training_loss_is_a_finite_scalar() -> None:
     loss = flow.training_loss(real)
     assert loss.ndim == 0
     assert torch.isfinite(loss)
+
+
+def test_training_loss_is_reproducible_with_fixed_generator() -> None:
+    class ZeroVelocity(nn.Module):
+        def forward(self, x: torch.Tensor, time: torch.Tensor) -> torch.Tensor:
+            del time
+            return torch.zeros_like(x)
+
+    flow = RectifiedFlow(ZeroVelocity())
+    real = torch.zeros(2, 3, 4, 4)
+    first_generator = torch.Generator().manual_seed(2026)
+    second_generator = torch.Generator().manual_seed(2026)
+
+    first_loss = flow.training_loss(real, generator=first_generator)
+    second_loss = flow.training_loss(real, generator=second_generator)
+
+    assert torch.equal(first_loss, second_loss)

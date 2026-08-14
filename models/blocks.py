@@ -19,7 +19,7 @@ class ResidualBlock(nn.Module):
         super().__init__()
         self.norm1 = group_norm(in_channels)
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-        self.time_projection = nn.Linear(time_dim, out_channels)
+        self.time_projection = nn.Linear(time_dim, out_channels * 2)
         self.norm2 = group_norm(out_channels)
         self.dropout = nn.Dropout(dropout)
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
@@ -31,8 +31,11 @@ class ResidualBlock(nn.Module):
 
     def forward(self, x: torch.Tensor, time_embedding: torch.Tensor) -> torch.Tensor:
         hidden = self.conv1(F.silu(self.norm1(x)))
-        hidden = hidden + self.time_projection(F.silu(time_embedding))[:, :, None, None]
-        hidden = self.conv2(self.dropout(F.silu(self.norm2(hidden))))
+        scale, shift = self.time_projection(F.silu(time_embedding)).chunk(2, dim=1)
+        hidden = self.norm2(hidden)
+        hidden = hidden * (1.0 + scale[:, :, None, None])
+        hidden = hidden + shift[:, :, None, None]
+        hidden = self.conv2(self.dropout(F.silu(hidden)))
         return hidden + self.skip(x)
 
 

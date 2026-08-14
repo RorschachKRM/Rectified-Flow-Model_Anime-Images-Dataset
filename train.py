@@ -17,6 +17,7 @@ from flow import RectifiedFlow
 from utils.checkpoint import load_checkpoint, save_checkpoint
 from utils.config import ensure_directories, load_config
 from utils.device import amp_enabled, resolve_device, seed_everything
+from utils.ema import ExponentialMovingAverage
 from utils.model import build_model
 from utils.visualization import (
     log_generation_to_tensorboard,
@@ -31,6 +32,7 @@ def autocast_context(enabled: bool):
 
 def train_one_epoch(
     flow: RectifiedFlow,
+    ema: ExponentialMovingAverage,
     loader: DataLoader[torch.Tensor],
     optimizer: torch.optim.Optimizer,
     scaler: torch.amp.GradScaler,
@@ -55,8 +57,11 @@ def train_one_epoch(
         if gradient_clip > 0:
             scaler.unscale_(optimizer)
             nn.utils.clip_grad_norm_(flow.model.parameters(), gradient_clip)
+        scale_before_step = scaler.get_scale()
         scaler.step(optimizer)
         scaler.update()
+        if scaler.get_scale() >= scale_before_step:
+            ema.update(flow.model)
 
         batch_size = images.shape[0]
         total_loss += loss.detach().item() * batch_size
@@ -77,6 +82,7 @@ def evaluate_loss(
     device: torch.device,
     use_amp: bool,
     description: str,
+    generator: torch.Generator | None = None,
 ) -> float:
     flow.model.eval()
     total_loss = 0.0
@@ -84,7 +90,7 @@ def evaluate_loss(
     for images in tqdm(loader, desc=description, leave=False):
         images = images.to(device, non_blocking=True)
         with autocast_context(use_amp):
-            loss = flow.training_loss(images)
+            loss = flow.training_loss(images, generator=generator)
         total_loss += loss.item() * images.shape[0]
         total_images += images.shape[0]
     return total_loss / max(total_images, 1)
@@ -134,6 +140,8 @@ def run_training(config: dict[str, Any]) -> None:
     model = build_model(config, device)
     flow = RectifiedFlow(model)
     training_config = config["training"]
+    ema = ExponentialMovingAverage(model, decay=float(training_config["ema_decay"]))
+    ema_flow = RectifiedFlow(ema.model)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(training_config["learning_rate"]),
@@ -156,7 +164,13 @@ def run_training(config: dict[str, Any]) -> None:
     history: dict[str, list[float]] = {"train": [], "val": []}
     if bool(training_config["resume"]) and latest_path.is_file():
         checkpoint = load_checkpoint(
-            latest_path, model, device, optimizer, scaler, scheduler
+            latest_path,
+            model,
+            device,
+            optimizer,
+            scaler,
+            scheduler,
+            ema_model=ema.model,
         )
         start_epoch = int(checkpoint["epoch"]) + 1
         global_step = int(checkpoint.get("global_step", 0))
@@ -167,7 +181,7 @@ def run_training(config: dict[str, Any]) -> None:
         print(f"从 {latest_path} 恢复，将从第 {start_epoch} 个 epoch 继续")
 
     noise_generator = torch.Generator(device=device).manual_seed(
-        int(config["project"]["seed"])
+        int(config["evaluation"]["preview_seed"])
     )
     fixed_noise = torch.randn(
         int(config["sampling"]["num_samples"]),
@@ -182,6 +196,7 @@ def run_training(config: dict[str, Any]) -> None:
         for epoch in range(start_epoch, int(training_config["epochs"]) + 1):
             train_loss, global_step = train_one_epoch(
                 flow=flow,
+                ema=ema,
                 loader=loaders["train"],
                 optimizer=optimizer,
                 scaler=scaler,
@@ -198,7 +213,17 @@ def run_training(config: dict[str, Any]) -> None:
             should_validate = epoch % int(training_config["validate_every_epochs"]) == 0
             val_loss = math.nan
             if should_validate:
-                val_loss = evaluate_loss(flow, loaders["val"], device, use_amp, "Validation")
+                validation_generator = torch.Generator(device=device).manual_seed(
+                    int(config["evaluation"]["validation_seed"])
+                )
+                val_loss = evaluate_loss(
+                    ema_flow,
+                    loaders["val"],
+                    device,
+                    use_amp,
+                    "Validation",
+                    generator=validation_generator,
+                )
                 history["val"].append(val_loss)
                 writer.add_scalar("loss/validation_epoch", val_loss, epoch)
 
@@ -208,7 +233,7 @@ def run_training(config: dict[str, Any]) -> None:
             print(epoch_message)
 
             if epoch % int(training_config["sample_every_epochs"]) == 0:
-                generate_preview(flow, fixed_noise, config, epoch, writer, use_amp)
+                generate_preview(ema_flow, fixed_noise, config, epoch, writer, use_amp)
 
             scheduler.step()
             writer.add_scalar(
@@ -227,6 +252,7 @@ def run_training(config: dict[str, Any]) -> None:
                     best_val_loss,
                     history,
                     scheduler,
+                    ema.model,
                 )
             save_checkpoint(
                 latest_path,
@@ -238,6 +264,7 @@ def run_training(config: dict[str, Any]) -> None:
                 best_val_loss,
                 history,
                 scheduler,
+                ema.model,
             )
             if epoch % int(training_config["save_every_epochs"]) == 0:
                 save_checkpoint(
@@ -250,6 +277,7 @@ def run_training(config: dict[str, Any]) -> None:
                     best_val_loss,
                     history,
                     scheduler,
+                    ema.model,
                 )
 
             plot_loss_curves(history, Path(config["paths"]["plot_dir"]) / "loss_curve.png")

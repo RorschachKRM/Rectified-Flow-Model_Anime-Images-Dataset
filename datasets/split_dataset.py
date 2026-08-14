@@ -8,12 +8,147 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+import imagehash
 from PIL import Image
 
 from utils.config import PROJECT_ROOT, load_config
 
 
 SPLIT_NAMES = ("train", "val", "test")
+
+
+class _UnionFind:
+    def __init__(self, size: int) -> None:
+        self.parents = list(range(size))
+
+    def find(self, value: int) -> int:
+        while self.parents[value] != value:
+            self.parents[value] = self.parents[self.parents[value]]
+            value = self.parents[value]
+        return value
+
+    def union(self, left: int, right: int) -> None:
+        left_root = self.find(left)
+        right_root = self.find(right)
+        if left_root != right_root:
+            self.parents[right_root] = left_root
+
+
+class _BKTree:
+    """使用汉明距离检索接近的整数感知哈希。"""
+
+    def __init__(self) -> None:
+        self.root: dict[str, Any] | None = None
+
+    def add(self, hash_value: int, image_index: int) -> None:
+        if self.root is None:
+            self.root = {"hash": hash_value, "indexes": [image_index], "children": {}}
+            return
+
+        node = self.root
+        while True:
+            distance = (hash_value ^ node["hash"]).bit_count()
+            if distance == 0:
+                node["indexes"].append(image_index)
+                return
+            child = node["children"].get(distance)
+            if child is None:
+                node["children"][distance] = {
+                    "hash": hash_value,
+                    "indexes": [image_index],
+                    "children": {},
+                }
+                return
+            node = child
+
+    def query(self, hash_value: int, max_distance: int) -> set[int]:
+        if self.root is None:
+            return set()
+        matches: set[int] = set()
+        pending = [self.root]
+        while pending:
+            node = pending.pop()
+            distance = (hash_value ^ node["hash"]).bit_count()
+            if distance <= max_distance:
+                matches.update(node["indexes"])
+            lower = distance - max_distance
+            upper = distance + max_distance
+            pending.extend(
+                child
+                for edge_distance, child in node["children"].items()
+                if lower <= edge_distance <= upper
+            )
+        return matches
+
+
+def _center_crop(image: Image.Image, ratio: float) -> Image.Image:
+    width, height = image.size
+    crop_width = max(8, round(width * ratio))
+    crop_height = max(8, round(height * ratio))
+    left = (width - crop_width) // 2
+    top = (height - crop_height) // 2
+    return image.crop((left, top, left + crop_width, top + crop_height)).resize(
+        image.size, Image.Resampling.LANCZOS
+    )
+
+
+def _perceptual_hashes(path: Path, hash_size: int, crop_ratios: list[float]) -> tuple[int, ...]:
+    with Image.open(path) as source:
+        image = source.convert("RGB")
+        variants = [image, *(_center_crop(image, ratio) for ratio in crop_ratios)]
+        return tuple(int(str(imagehash.phash(variant, hash_size=hash_size)), 16) for variant in variants)
+
+
+def _cluster_near_duplicates(
+    exact_groups: list[list[Path]],
+    hash_size: int,
+    threshold: int,
+    crop_ratios: list[float],
+) -> tuple[list[list[Path]], list[dict[str, Any]]]:
+    hashes = [
+        _perceptual_hashes(group[0], hash_size=hash_size, crop_ratios=crop_ratios)
+        for group in exact_groups
+    ]
+    tree = _BKTree()
+    for image_index, variants in enumerate(hashes):
+        for hash_value in variants:
+            tree.add(hash_value, image_index)
+
+    union_find = _UnionFind(len(exact_groups))
+    edge_distances: dict[tuple[int, int], int] = {}
+    for image_index, variants in enumerate(hashes):
+        candidates: set[int] = set()
+        for hash_value in variants:
+            candidates.update(tree.query(hash_value, threshold))
+        for candidate in candidates:
+            if candidate <= image_index:
+                continue
+            distance = min(
+                (left_hash ^ right_hash).bit_count()
+                for left_hash in variants
+                for right_hash in hashes[candidate]
+            )
+            if distance <= threshold:
+                union_find.union(image_index, candidate)
+                edge_distances[(image_index, candidate)] = distance
+
+    clustered_indexes: dict[int, list[int]] = defaultdict(list)
+    for image_index in range(len(exact_groups)):
+        clustered_indexes[union_find.find(image_index)].append(image_index)
+
+    clustered_groups = [
+        [path for image_index in indexes for path in exact_groups[image_index]]
+        for indexes in clustered_indexes.values()
+    ]
+    matches = [
+        {
+            "left": _relative_project_path(exact_groups[left][0]),
+            "right": _relative_project_path(exact_groups[right][0]),
+            "hamming_distance": distance,
+        }
+        for (left, right), distance in sorted(edge_distances.items())
+    ]
+    return clustered_groups, matches
 
 
 def file_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
@@ -67,11 +202,12 @@ def _build_inventory(image_paths: list[Path]) -> dict[str, list[int]]:
 
 
 def prepare_splits(config: dict[str, Any], force: bool = False) -> dict[str, Any]:
-    """校验图片、按内容哈希去重，并生成可复现的数据清单。"""
+    """校验图片、执行精确和感知去重，并生成可复现的数据清单。"""
     data_config = config["data"]
     raw_dir = Path(data_config["raw_dir"])
     split_dir = Path(data_config["split_dir"])
     metadata_path = split_dir / "metadata.json"
+    dedup_report_path = split_dir / "dedup_report.json"
     manifest_paths = {name: split_dir / f"{name}.txt" for name in SPLIT_NAMES}
 
     if not raw_dir.is_dir():
@@ -86,6 +222,10 @@ def prepare_splits(config: dict[str, Any], force: bool = False) -> dict[str, Any
         "image_size": int(data_config["image_size"]),
         "seed": int(data_config["split_seed"]),
         "remove_exact_duplicates": bool(data_config["remove_exact_duplicates"]),
+        "remove_near_duplicates": bool(data_config["remove_near_duplicates"]),
+        "phash_size": int(data_config["phash_size"]),
+        "phash_threshold": int(data_config["phash_threshold"]),
+        "phash_crop_ratios": [float(value) for value in data_config["phash_crop_ratios"]],
         "ratios": {name: float(data_config[f"{name}_ratio"]) for name in SPLIT_NAMES},
     }
     if not force and metadata_path.is_file() and all(path.is_file() for path in manifest_paths.values()):
@@ -103,9 +243,22 @@ def prepare_splits(config: dict[str, Any], force: bool = False) -> dict[str, Any
         validate_image(path, int(data_config["image_size"]))
         hash_groups[file_sha256(path)].append(path)
 
-    groups = list(hash_groups.values())
+    exact_groups = list(hash_groups.values())
+    exact_unique_images = len(exact_groups)
+    near_matches: list[dict[str, Any]] = []
+    if bool(data_config["remove_near_duplicates"]):
+        groups, near_matches = _cluster_near_duplicates(
+            exact_groups,
+            hash_size=int(data_config["phash_size"]),
+            threshold=int(data_config["phash_threshold"]),
+            crop_ratios=[float(value) for value in data_config["phash_crop_ratios"]],
+        )
+    else:
+        groups = exact_groups
     random.Random(int(data_config["split_seed"])).shuffle(groups)
-    remove_duplicates = bool(data_config["remove_exact_duplicates"])
+    remove_duplicates = bool(data_config["remove_exact_duplicates"]) or bool(
+        data_config["remove_near_duplicates"]
+    )
     samples = [group[0] for group in groups] if remove_duplicates else groups
 
     ratios = [float(data_config[f"{name}_ratio"]) for name in SPLIT_NAMES]
@@ -133,20 +286,47 @@ def prepare_splits(config: dict[str, Any], force: bool = False) -> dict[str, Any
             "".join(f"{_relative_project_path(path)}\n" for path in paths), encoding="utf-8"
         )
 
-    duplicate_files = sum(len(group) - 1 for group in groups)
+    exact_duplicate_files = len(image_paths) - exact_unique_images
+    near_duplicate_files = exact_unique_images - len(groups)
+    duplicate_files = exact_duplicate_files + near_duplicate_files
     metadata: dict[str, Any] = {
         "raw_dir": _relative_project_path(raw_dir),
         "seed": int(data_config["split_seed"]),
-        "remove_exact_duplicates": remove_duplicates,
+        "remove_exact_duplicates": bool(data_config["remove_exact_duplicates"]),
+        "remove_near_duplicates": bool(data_config["remove_near_duplicates"]),
         "total_files": len(image_paths),
         "unique_images": len(groups),
         "duplicate_files": duplicate_files,
+        "exact_unique_images": exact_unique_images,
+        "exact_duplicate_files": exact_duplicate_files,
+        "near_duplicate_files": near_duplicate_files,
         "splits": {name: len(paths) for name, paths in split_values.items()},
         "split_settings": split_settings,
         "inventory": current_inventory,
     }
     metadata_path.write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    dedup_report = {
+        "settings": split_settings,
+        "summary": {
+            "total_files": len(image_paths),
+            "exact_duplicate_files": exact_duplicate_files,
+            "near_duplicate_files": near_duplicate_files,
+            "retained_images": len(groups),
+        },
+        "near_duplicate_matches": near_matches,
+        "clusters": [
+            {
+                "representative": _relative_project_path(group[0]),
+                "excluded": [_relative_project_path(path) for path in group[1:]],
+            }
+            for group in groups
+            if len(group) > 1
+        ],
+    }
+    dedup_report_path.write_text(
+        json.dumps(dedup_report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     return metadata
 

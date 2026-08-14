@@ -1,5 +1,5 @@
 project:
-  name: rectified-flow-anime-v1.2-local-benchmark
+  name: rectified-flow-anime-v1.2-local-resume
   seed: 42
 
 data:
@@ -15,7 +15,8 @@ data:
   phash_threshold: 4
   phash_crop_ratios: [0.9]
   split_seed: 42
-  auto_prepare: true
+  # 直接复用从 Colab 下载的相同清单，避免本地文件时间差触发重新划分。
+  auto_prepare: false
   horizontal_flip: true
   num_workers: 4
 
@@ -30,7 +31,7 @@ model:
 
 training:
   device: auto
-  epochs: 1
+  epochs: 100
   batch_size: 32
   learning_rate: 0.0002
   scheduler:
@@ -64,7 +65,6 @@ evaluation:
   kid_subsets: 50
   kid_subset_size: 500
 
-# 与 default.yaml 使用完全相同的 V1.2 输出路径：本次 epoch 1 会成为正式训练的断点。
 paths:
   output_dir: outputs/v1_2
   checkpoint_dir: outputs/v1_2/checkpoints

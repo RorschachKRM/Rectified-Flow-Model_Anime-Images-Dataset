@@ -32,6 +32,7 @@ def load_config(config_path: str | Path = "config/default.yaml") -> dict[str, An
             "checkpoint_dir",
             "sample_dir",
             "plot_dir",
+            "evaluation_dir",
             "log_dir",
         ),
     }.items():
@@ -51,6 +52,13 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("image_size 必须能被 U-Net 的总下采样倍数整除")
     if config["model"]["in_channels"] != config["model"]["out_channels"]:
         raise ValueError("Rectified Flow 的输入和输出通道数必须相同")
+    if config["data"]["phash_size"] < 4:
+        raise ValueError("data.phash_size 必须至少为 4")
+    hash_bits = int(config["data"]["phash_size"]) ** 2
+    if not 0 <= config["data"]["phash_threshold"] <= hash_bits:
+        raise ValueError("data.phash_threshold 必须位于 0 和 pHash 位数之间")
+    if any(not 0.0 < ratio < 1.0 for ratio in config["data"]["phash_crop_ratios"]):
+        raise ValueError("data.phash_crop_ratios 中的值必须位于 0 和 1 之间")
     if config["sampling"]["num_steps"] <= 0:
         raise ValueError("sampling.num_steps 必须大于 0")
     if config["sampling"]["solver"] not in {"euler", "heun"}:
@@ -66,6 +74,14 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("training.scheduler.name 目前只支持 cosine")
     if not 0 <= scheduler["min_learning_rate"] < config["training"]["learning_rate"]:
         raise ValueError("min_learning_rate 必须大于等于 0 且小于 learning_rate")
+    if not 0.0 < config["training"]["ema_decay"] < 1.0:
+        raise ValueError("training.ema_decay 必须位于 0 和 1 之间")
+    if config["evaluation"]["batch_size"] <= 0:
+        raise ValueError("evaluation.batch_size 必须大于 0")
+    if config["evaluation"]["kid_subsets"] <= 0:
+        raise ValueError("evaluation.kid_subsets 必须大于 0")
+    if config["evaluation"]["kid_subset_size"] < 2:
+        raise ValueError("evaluation.kid_subset_size 必须至少为 2")
     for key in ("validate_every_epochs", "sample_every_epochs", "save_every_epochs"):
         if config["training"][key] <= 0:
             raise ValueError(f"training.{key} 必须大于 0")

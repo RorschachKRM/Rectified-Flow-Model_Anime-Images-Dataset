@@ -1,6 +1,7 @@
 import torch
 
 from models import UNet
+from models.blocks import ResidualBlock
 
 
 def test_unet_preserves_image_shape() -> None:
@@ -37,3 +38,15 @@ def test_unet_rejects_invalid_time_shape() -> None:
         assert "batch_size" in str(error)
     else:
         raise AssertionError("无效的 time 形状应抛出 ValueError")
+
+
+def test_residual_block_uses_scale_shift_time_projection() -> None:
+    block = ResidualBlock(in_channels=16, out_channels=32, time_dim=64, dropout=0.0)
+    images = torch.randn(2, 16, 8, 8)
+    time_embedding = torch.randn(2, 64)
+
+    output = block(images, time_embedding)
+
+    assert block.time_projection.out_features == 64
+    assert output.shape == (2, 32, 8, 8)
+    assert torch.isfinite(output).all()
