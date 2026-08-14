@@ -410,12 +410,12 @@ python evaluate.py --config config/default.yaml
 
 | 训练最终生成结果 | 从噪声到图片的最终生成轨迹 |
 |:---:|:---:|
-| ![V1.2 训练最终生成结果](<outputs/v1_2/samples/train final.png>) | ![V1.2 从噪声到图片的最终生成轨迹](<outputs/v1_2/samples/train final noise_to_image_trajectory.png>) |
+| ![V1.2 训练最终生成结果](<IMG/V1-2 train final.png>) | ![V1.2 从噪声到图片的最终生成轨迹](<IMG/V1-2 train final noise_to_image_trajectory.png>) |
 
 下面的示例使用 V1.2 训练完成后的 `best.pt`，默认加载 EMA 权重，并通过 50 步 Heun 法生成：
 
 | Seed 123 | Seed 456 |
 |:---:|:---:|
-| ![V1.2 Seed 123 生成结果](outputs/v1_2/samples/final_seed_123.png) | ![V1.2 Seed 456 生成结果](outputs/v1_2/samples/final_seed_456.png) |
+| ![V1.2 Seed 123 生成结果](<IMG/V1-2 final_seed_123.png>) | ![V1.2 Seed 456 生成结果](<IMG/V1-2 final_seed_456.png>) |
 
 
