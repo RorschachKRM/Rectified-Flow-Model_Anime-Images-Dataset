@@ -1,0 +1,80 @@
+project:
+  name: rectified-flow-anime-v2.0-teacher
+  version: "2.0"
+  seed: 42
+
+data:
+  raw_dir: Data/train/nolabel
+  # 与 V1.2 复用同一份去重和划分清单，保证质量指标可直接比较。
+  split_dir: datasets/splits_v1_2
+  image_size: 64
+  train_ratio: 0.90
+  val_ratio: 0.05
+  test_ratio: 0.05
+  remove_exact_duplicates: true
+  remove_near_duplicates: true
+  phash_size: 8
+  phash_threshold: 4
+  phash_crop_ratios: [0.9]
+  split_seed: 42
+  auto_prepare: false
+  horizontal_flip: true
+  num_workers: 4
+
+model:
+  in_channels: 3
+  out_channels: 3
+  base_channels: 96
+  channel_multipliers: [1, 2, 4, 4]
+  num_res_blocks: 2
+  time_embedding_dim: 384
+  dropout: 0.05
+  attention_resolutions: [16, 8]
+  attention_num_heads: 8
+  attention_dropout: 0.0
+
+training:
+  device: auto
+  epochs: 120
+  batch_size: 16
+  gradient_accumulation_steps: 2
+  learning_rate: 0.0002
+  scheduler:
+    name: cosine
+    min_learning_rate: 0.000001
+  ema_decay: 0.9999
+  weight_decay: 0.0001
+  mixed_precision: true
+  gradient_clip: 1.0
+  log_every_steps: 50
+  validate_every_epochs: 1
+  sample_every_epochs: 5
+  save_every_epochs: 10
+  # 只会恢复 outputs/v2_0_teacher/checkpoints/latest.pt，不会读取 V1.x。
+  resume: true
+
+sampling:
+  solver: heun
+  num_steps: 50
+  num_samples: 16
+  trajectory_frames: 9
+  trajectory_samples: 8
+
+evaluation:
+  preview_seed: 42
+  validation_seed: 2026
+  generation_seed: 2026
+  metric_seed: 2026
+  batch_size: 16
+  calculate_fid: true
+  calculate_kid: true
+  kid_subsets: 50
+  kid_subset_size: 500
+
+paths:
+  output_dir: outputs/v2_0_teacher
+  checkpoint_dir: outputs/v2_0_teacher/checkpoints
+  sample_dir: outputs/v2_0_teacher/samples
+  plot_dir: outputs/v2_0_teacher/plots
+  evaluation_dir: outputs/v2_0_teacher/evaluation
+  log_dir: runs/rectified_flow_v2_0_teacher

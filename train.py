@@ -42,34 +42,58 @@ def train_one_epoch(
     writer: SummaryWriter,
     global_step: int,
     log_every_steps: int,
+    gradient_accumulation_steps: int = 1,
 ) -> tuple[float, int]:
     flow.model.train()
     total_loss = 0.0
     total_images = 0
     progress = tqdm(loader, desc="Train", leave=False)
 
-    for images in progress:
+    optimizer.zero_grad(set_to_none=True)
+    accumulation_loss = 0.0
+    accumulation_size = gradient_accumulation_steps
+    for batch_index, images in enumerate(progress):
+        if batch_index % gradient_accumulation_steps == 0:
+            accumulation_size = min(
+                gradient_accumulation_steps, len(loader) - batch_index
+            )
+            accumulation_loss = 0.0
         images = images.to(device, non_blocking=True)
-        optimizer.zero_grad(set_to_none=True)
         with autocast_context(use_amp):
             loss = flow.training_loss(images)
-        scaler.scale(loss).backward()
-        if gradient_clip > 0:
-            scaler.unscale_(optimizer)
-            nn.utils.clip_grad_norm_(flow.model.parameters(), gradient_clip)
-        scale_before_step = scaler.get_scale()
-        scaler.step(optimizer)
-        scaler.update()
-        if scaler.get_scale() >= scale_before_step:
-            ema.update(flow.model)
+            scaled_loss = loss / accumulation_size
+        scaler.scale(scaled_loss).backward()
+        accumulation_loss += loss.detach().item()
 
         batch_size = images.shape[0]
         total_loss += loss.detach().item() * batch_size
         total_images += batch_size
-        global_step += 1
-        if global_step % log_every_steps == 0:
-            writer.add_scalar("loss/train_step", loss.detach().item(), global_step)
-            writer.add_scalar("training/learning_rate", optimizer.param_groups[0]["lr"], global_step)
+        should_step = (
+            (batch_index + 1) % gradient_accumulation_steps == 0
+            or batch_index + 1 == len(loader)
+        )
+        if should_step:
+            if gradient_clip > 0:
+                scaler.unscale_(optimizer)
+                nn.utils.clip_grad_norm_(flow.model.parameters(), gradient_clip)
+            scale_before_step = scaler.get_scale()
+            scaler.step(optimizer)
+            scaler.update()
+            if scaler.get_scale() >= scale_before_step:
+                ema.update(flow.model)
+            optimizer.zero_grad(set_to_none=True)
+            global_step += 1
+            if global_step % log_every_steps == 0:
+                writer.add_scalar(
+                    "loss/train_step",
+                    accumulation_loss / accumulation_size,
+                    global_step,
+                )
+                writer.add_scalar(
+                    "training/learning_rate",
+                    optimizer.param_groups[0]["lr"],
+                    global_step,
+                )
         progress.set_postfix(loss=f"{loss.detach().item():.4f}")
 
     return total_loss / max(total_images, 1), global_step
@@ -140,6 +164,19 @@ def run_training(config: dict[str, Any]) -> None:
     model = build_model(config, device)
     flow = RectifiedFlow(model)
     training_config = config["training"]
+    gradient_accumulation_steps = int(
+        training_config.get("gradient_accumulation_steps", 1)
+    )
+    parameter_count = sum(parameter.numel() for parameter in model.parameters())
+    effective_batch_size = (
+        int(training_config["batch_size"]) * gradient_accumulation_steps
+    )
+    print(
+        f"模型参数: {parameter_count / 1_000_000:.2f}M，"
+        f"微批次: {training_config['batch_size']}，"
+        f"梯度累积: {gradient_accumulation_steps}，"
+        f"有效批次: {effective_batch_size}"
+    )
     ema = ExponentialMovingAverage(model, decay=float(training_config["ema_decay"]))
     ema_flow = RectifiedFlow(ema.model)
     optimizer = torch.optim.AdamW(
@@ -206,6 +243,7 @@ def run_training(config: dict[str, Any]) -> None:
                 writer=writer,
                 global_step=global_step,
                 log_every_steps=int(training_config["log_every_steps"]),
+                gradient_accumulation_steps=gradient_accumulation_steps,
             )
             history["train"].append(train_loss)
             writer.add_scalar("loss/train_epoch", train_loss, epoch)

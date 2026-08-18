@@ -438,3 +438,86 @@ python evaluate.py --config config/default.yaml
 
 把 V1.2 定位为：
 一个成功收敛、具有稳定生成能力的中等质量基线模型。
+
+## V2.0：扩容 U-Net 与低分辨率自注意力
+
+V2.0 先提升一次 Rectified Flow teacher 的模型容量和全局建模能力，不包含
+reflow；reflow 及低步数 student 训练计划在 V2.1 实现。
+
+主要变化：
+
+1. U-Net 的 `base_channels` 从 64 增加到 96，时间嵌入从 256 增加到 384；
+2. 在 encoder、middle 和 decoder 的 16×16、8×8 特征层加入多头自注意力；
+3. Attention 使用 PyTorch 原生 `scaled_dot_product_attention`，输出投影零初始化；
+4. 残差块 dropout 调整为 0.05；
+5. 增加梯度累积；本地默认以微批次 16、累积 2 次保持有效 batch size 32；
+6. 继续复用 V1.2 的去重数据清单，使 FID/KID 可以使用同一测试集比较。
+
+V2.0 的全部训练产物使用独立目录：
+
+```text
+outputs/v2_0_teacher/
+runs/rectified_flow_v2_0_teacher/
+```
+
+不会读取或覆盖 `outputs/v1_2/` 中的 checkpoint、样本及评估结果。V2.0
+首次运行时目录中没有 `latest.pt`，因此会从头训练；中断后重新执行同一命令时，
+只会从 V2.0 自己的 `latest.pt` 恢复。
+
+运行 V2.0 训练：
+
+```powershell
+conda activate code
+python train.py --config config/v2_teacher.yaml
+```
+
+训练完成后生成和评估：
+
+```powershell
+python sample.py --config config/v2_teacher.yaml --seed 123
+python evaluate.py --config config/v2_teacher.yaml
+```
+
+
+
+### V2.0 实际生成效果
+
+V1.2 的固定基线为 FID 36.4685、KID 0.015611 ± 0.000764、flow MSE
+0.191947。V2.0 teacher 应在相同测试清单、EMA、Heun 50 步和固定随机种子下比较。
+
+| 训练最终生成结果 | 从噪声到图片的最终生成轨迹 |
+|:---:|:---:|
+| ![V2.0 训练最终生成结果](<IMG/V2-final.png>) | ![V2.0 从噪声到图片的最终生成轨迹](<IMG/V2-train final noise_to_image_trajectory.png>) |
+
+下面的示例使用 V2.0 训练至第 120 个 epoch 后保存的 `best.pt`，加载 EMA
+权重，并通过 50 步 Heun 法生成：
+
+| Seed 123 | Seed 456 |
+|:---:|:---:|
+| ![V2.0 Seed 123 生成结果](<IMG/V2-sample_seed_123.png>) | ![V2.0 Seed 456 生成结果](<IMG/V2-sample_seed_456.png>) |
+
+模型评估结果：
+
+| Flow MSE | FID（800 个评估样本） | KID |
+|:---:|:---:|:---:|
+| 0.188749 | 32.1721 | 0.010191 ± 0.000807 |
+
+评估结论：
+
+1. FID 从 V1.2 的 36.4685 降至 32.1721，改善约 11.8%，说明扩容 U-Net
+   与低分辨率自注意力有效缩小了生成分布和真实数据之间的差距。
+2. KID 从 0.015611 降至 0.010191，改善约 34.7%，且置信波动较小，支持
+   V2.0 的生成质量相较 V1.2 有实质提升。
+3. Flow MSE 从 0.191947 降至 0.188749，改善约 1.7%。该指标提升相对有限，
+   但与 FID、KID 的改善方向一致，未显示明显的训练/测试失配。
+
+结合实际生成图，可以概括为：
+
+- 优点：人物轮廓、五官结构、色彩与头发纹理整体更加稳定，固定 seed 样本和生成
+  轨迹表明模型能够从噪声逐步形成清晰的动漫头像。
+- 不足：局部细节、左右对称性和复杂发饰仍有提升空间；FID 仍高于此前设定的
+  30 以下目标，V2.0 尚未达到高质量生成水平。
+- 版本定位：V2.0 已取得可量化、可复现的显著进步，可作为后续 V2.1 reflow
+  student 蒸馏与低步数生成实验的 teacher 基线。
+
+

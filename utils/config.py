@@ -52,6 +52,32 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("image_size 必须能被 U-Net 的总下采样倍数整除")
     if config["model"]["in_channels"] != config["model"]["out_channels"]:
         raise ValueError("Rectified Flow 的输入和输出通道数必须相同")
+    if config["model"]["base_channels"] <= 0:
+        raise ValueError("model.base_channels 必须大于 0")
+    attention_resolutions = {
+        int(value) for value in config["model"].get("attention_resolutions", [])
+    }
+    level_resolutions = {
+        int(config["data"]["image_size"]) // (2**level)
+        for level in range(len(config["model"]["channel_multipliers"]))
+    }
+    unsupported_resolutions = attention_resolutions - level_resolutions
+    if unsupported_resolutions:
+        raise ValueError(
+            "model.attention_resolutions 包含 U-Net 中不存在的分辨率: "
+            f"{sorted(unsupported_resolutions)}"
+        )
+    attention_num_heads = int(config["model"].get("attention_num_heads", 8))
+    if attention_num_heads <= 0:
+        raise ValueError("model.attention_num_heads 必须大于 0")
+    for level, multiplier in enumerate(config["model"]["channel_multipliers"]):
+        resolution = int(config["data"]["image_size"]) // (2**level)
+        channels = int(config["model"]["base_channels"]) * int(multiplier)
+        if resolution in attention_resolutions and channels % attention_num_heads:
+            raise ValueError(
+                f"分辨率 {resolution} 的通道数 {channels} "
+                f"不能被 attention_num_heads={attention_num_heads} 整除"
+            )
     if config["data"]["phash_size"] < 4:
         raise ValueError("data.phash_size 必须至少为 4")
     hash_bits = int(config["data"]["phash_size"]) ** 2
@@ -69,6 +95,8 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("trajectory_samples 必须位于 1 和 num_samples 之间")
     if config["training"]["log_every_steps"] <= 0:
         raise ValueError("training.log_every_steps 必须大于 0")
+    if int(config["training"].get("gradient_accumulation_steps", 1)) <= 0:
+        raise ValueError("training.gradient_accumulation_steps 必须大于 0")
     scheduler = config["training"]["scheduler"]
     if scheduler["name"] != "cosine":
         raise ValueError("training.scheduler.name 目前只支持 cosine")
