@@ -442,7 +442,7 @@ python evaluate.py --config config/default.yaml
 ## V2.0：扩容 U-Net 与低分辨率自注意力
 
 V2.0 先提升一次 Rectified Flow teacher 的模型容量和全局建模能力，不包含
-reflow；reflow 及低步数 student 训练计划在 V2.1 实现。
+reflow；
 
 主要变化：
 
@@ -517,7 +517,53 @@ V1.2 的固定基线为 FID 36.4685、KID 0.015611 ± 0.000764、flow MSE
   轨迹表明模型能够从噪声逐步形成清晰的动漫头像。
 - 不足：局部细节、左右对称性和复杂发饰仍有提升空间；FID 仍高于此前设定的
   30 以下目标，V2.0 尚未达到高质量生成水平。
-- 版本定位：V2.0 已取得可量化、可复现的显著进步，可作为后续 V2.1 reflow
-  student 蒸馏与低步数生成实验的 teacher 基线。
+- 版本定位：V2.0 已取得可量化、可复现的显著进步。
 
 
+### PS:
+
+以上的V2.0展示是在colab生成之100epoch后，将已有参数迁移至本机接着完成了剩余的20epochs。可能由于设备迁移，图像生成产生了一些变化，于是我又在谷歌colab完成完整120epochs的训练过程。以下是全流程colab训练模型结果：
+
+| 训练最终生成结果 | 从噪声到图片的最终生成轨迹 |
+|:---:|:---:|
+| ![V2.0 训练最终生成结果](<IMG/colab-V2-final.png>) | ![V2.0 从噪声到图片的最终生成轨迹](<IMG/colab-V2 train final noise_to_image_trajectory.png>) |
+
+下面的示例使用 V2.0 训练至第 120 个 epoch 后保存的 `best.pt`，加载 EMA
+权重，并通过 50 步 Heun 法生成：
+
+| Seed 123 | Seed 456 |
+|:---:|:---:|
+| ![V2.0 Seed 123 生成结果](<IMG/colab-V2_seed_123.png>) | ![V2.0 Seed 456 生成结果](<IMG/colab-V2_seed_456.png>) |
+
+模型评估结果：
+
+| Flow MSE | FID（800 个评估样本） | KID |
+|:---:|:---:|:---:|
+| 0.18437 | 31.529 | 0.00932679  ± 0.00081407 |
+
+colab不仅与本地训练的有差距，甚至colab的评估结果更好，分析原因可能如下：
+1. 本地和 Colab 没有使用完全相同的固定噪声张量。
+当前代码只保存了 seed，没有保存实际的 fixed_noise。噪声是在 GPU 上生成的：
+```
+torch.Generator(device=device)
+torch.randn(..., device=device)
+```
+colab T4 与 我本机的 RTX 5060 的 CUDA 随机数实现和计算内核不保证逐元素完全一致。因此即使 seed 都是 42，实际输入噪声仍可能不同。
+
+2. 续训路径不同。
+虽然两边有效 batch 都是 32：
+```
+Colab：32×1
+本地：16×2
+```
+
+但以下状态没有保存在 checkpoint 中：
+- DataLoader shuffle 状态；
+- Python/PyTorch 完整随机数状态；
+- dropout 随机序列。
+所以本地 epoch 101 以后走的是另一条优化轨迹。
+
+3. 两个 GPU 的 FP16 和 Attention 内核不同。
+T4 与 RTX 5060 使用的卷积和 SDPA Attention 内核不同。很小的 FP16 数值误差经过 Heun 50 步、100 次 U-Net 前向后会被放大。部分稳定的 latent 仍然相似，所以前三张变化较小；另一些 latent 会跨到不同生成模式，后面的头像变化明显。
+
+后续还应改进固定预览机制：把 fixed noise 在 CPU 上生成并保存为实际 .pt 文件，而不是只保存 seed。这样迁移到不同 GPU 后才能真正使用完全相同的输入噪声。
