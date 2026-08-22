@@ -159,26 +159,36 @@ def file_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
-def validate_image(path: Path, expected_size: int) -> None:
+def inspect_image(path: Path, min_source_size: int) -> dict[str, Any] | None:
+    """返回图片拒绝原因；可读取且短边达标时返回 None。"""
     try:
         with Image.open(path) as image:
+            width, height = image.size
             image.verify()
-        with Image.open(path) as image:
-            if image.mode != "RGB":
-                raise ValueError(f"图片不是 RGB 模式: {path} ({image.mode})")
-            if image.size != (expected_size, expected_size):
-                raise ValueError(
-                    f"图片尺寸不是 {expected_size}x{expected_size}: {path} ({image.size})"
-                )
-    except (OSError, SyntaxError) as error:
-        raise ValueError(f"图片无法读取: {path}") from error
+    except (OSError, SyntaxError, ValueError) as error:
+        return {"reason": "unreadable", "error": str(error)}
+    if min(width, height) < min_source_size:
+        return {
+            "reason": "source_too_small",
+            "size": [width, height],
+            "minimum": min_source_size,
+        }
+    return None
+
+
+def validate_image(path: Path, min_source_size: int) -> None:
+    """兼容旧调用：图片不可用时抛出带原因的 ValueError。"""
+    rejection = inspect_image(path, min_source_size)
+    if rejection is not None:
+        raise ValueError(f"图片不符合要求: {path} ({rejection})")
 
 
 def _relative_project_path(path: Path) -> str:
+    absolute_path = path if path.is_absolute() else PROJECT_ROOT / path
     try:
-        return path.resolve().relative_to(PROJECT_ROOT.resolve()).as_posix()
+        return absolute_path.relative_to(PROJECT_ROOT).as_posix()
     except ValueError:
-        return str(path.resolve())
+        return str(absolute_path)
 
 
 def _allocate_counts(total: int, ratios: list[float]) -> list[int]:
@@ -197,29 +207,56 @@ def _build_inventory(image_paths: list[Path]) -> dict[str, list[int]]:
     inventory: dict[str, list[int]] = {}
     for path in image_paths:
         stat = path.stat()
-        inventory[path.name] = [stat.st_size, stat.st_mtime_ns]
+        inventory[_relative_project_path(path)] = [stat.st_size, stat.st_mtime_ns]
     return inventory
+
+
+def _configured_raw_dirs(data_config: dict[str, Any]) -> list[Path]:
+    if "raw_dirs" in data_config:
+        return [Path(path) for path in data_config["raw_dirs"]]
+    return [Path(data_config["raw_dir"])]
+
+
+def _scan_images(raw_dirs: list[Path], extensions: set[str]) -> list[Path]:
+    image_paths = [
+        path
+        for raw_dir in raw_dirs
+        for path in raw_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in extensions
+    ]
+    return sorted(image_paths, key=lambda path: path.as_posix())
 
 
 def prepare_splits(config: dict[str, Any], force: bool = False) -> dict[str, Any]:
     """校验图片、执行精确和感知去重，并生成可复现的数据清单。"""
     data_config = config["data"]
-    raw_dir = Path(data_config["raw_dir"])
+    raw_dirs = _configured_raw_dirs(data_config)
     split_dir = Path(data_config["split_dir"])
     metadata_path = split_dir / "metadata.json"
     dedup_report_path = split_dir / "dedup_report.json"
     manifest_paths = {name: split_dir / f"{name}.txt" for name in SPLIT_NAMES}
 
-    if not raw_dir.is_dir():
-        raise FileNotFoundError(f"找不到原始图片目录: {raw_dir}")
+    for raw_dir in raw_dirs:
+        if not raw_dir.is_dir():
+            raise FileNotFoundError(f"找不到原始图片目录: {raw_dir}")
 
-    image_paths = sorted(raw_dir.glob("*.png"), key=lambda path: path.name)
+    extensions = {
+        str(value).lower()
+        for value in data_config.get("image_extensions", [".png"])
+    }
+    image_paths = _scan_images(raw_dirs, extensions)
     if not image_paths:
-        raise FileNotFoundError(f"目录中没有 PNG 图片: {raw_dir}")
+        raise FileNotFoundError(
+            f"原始目录中没有扩展名为 {sorted(extensions)} 的图片: {raw_dirs}"
+        )
     current_inventory = _build_inventory(image_paths)
     split_settings = {
-        "raw_dir": _relative_project_path(raw_dir),
+        "raw_dirs": [_relative_project_path(path) for path in raw_dirs],
+        "image_extensions": sorted(extensions),
         "image_size": int(data_config["image_size"]),
+        "min_source_size": int(
+            data_config.get("min_source_size", data_config["image_size"])
+        ),
         "seed": int(data_config["split_seed"]),
         "remove_exact_duplicates": bool(data_config["remove_exact_duplicates"]),
         "remove_near_duplicates": bool(data_config["remove_near_duplicates"]),
@@ -228,7 +265,12 @@ def prepare_splits(config: dict[str, Any], force: bool = False) -> dict[str, Any
         "phash_crop_ratios": [float(value) for value in data_config["phash_crop_ratios"]],
         "ratios": {name: float(data_config[f"{name}_ratio"]) for name in SPLIT_NAMES},
     }
-    if not force and metadata_path.is_file() and all(path.is_file() for path in manifest_paths.values()):
+    if (
+        not force
+        and metadata_path.is_file()
+        and dedup_report_path.is_file()
+        and all(path.is_file() for path in manifest_paths.values())
+    ):
         with metadata_path.open("r", encoding="utf-8") as file:
             cached_metadata = json.load(file)
         cached_inventory = cached_metadata.get("inventory")
@@ -238,9 +280,25 @@ def prepare_splits(config: dict[str, Any], force: bool = False) -> dict[str, Any
             if cached_inventory == current_inventory:
                 return cached_metadata
 
-    hash_groups: dict[str, list[Path]] = defaultdict(list)
+    min_source_size = int(
+        data_config.get("min_source_size", data_config["image_size"])
+    )
+    accepted_paths: list[Path] = []
+    rejected_images: list[dict[str, Any]] = []
     for path in image_paths:
-        validate_image(path, int(data_config["image_size"]))
+        rejection = inspect_image(path, min_source_size)
+        if rejection is not None:
+            rejected_images.append(
+                {"path": _relative_project_path(path), **rejection}
+            )
+            continue
+        accepted_paths.append(path)
+
+    if not accepted_paths:
+        raise ValueError("质量过滤后没有可用于训练的图片")
+
+    hash_groups: dict[str, list[Path]] = defaultdict(list)
+    for path in accepted_paths:
         hash_groups[file_sha256(path)].append(path)
 
     exact_groups = list(hash_groups.values())
@@ -271,7 +329,7 @@ def prepare_splits(config: dict[str, Any], force: bool = False) -> dict[str, Any
             start += count
     else:
         # 保留重复图片时也让同一哈希组只进入一个集合，避免数据泄漏。
-        targets = _allocate_counts(len(image_paths), ratios)
+        targets = _allocate_counts(len(accepted_paths), ratios)
         split_values = {name: [] for name in SPLIT_NAMES}
         for group in groups:
             available = [
@@ -286,15 +344,17 @@ def prepare_splits(config: dict[str, Any], force: bool = False) -> dict[str, Any
             "".join(f"{_relative_project_path(path)}\n" for path in paths), encoding="utf-8"
         )
 
-    exact_duplicate_files = len(image_paths) - exact_unique_images
+    exact_duplicate_files = len(accepted_paths) - exact_unique_images
     near_duplicate_files = exact_unique_images - len(groups)
     duplicate_files = exact_duplicate_files + near_duplicate_files
     metadata: dict[str, Any] = {
-        "raw_dir": _relative_project_path(raw_dir),
+        "raw_dirs": [_relative_project_path(path) for path in raw_dirs],
         "seed": int(data_config["split_seed"]),
         "remove_exact_duplicates": bool(data_config["remove_exact_duplicates"]),
         "remove_near_duplicates": bool(data_config["remove_near_duplicates"]),
         "total_files": len(image_paths),
+        "accepted_files": len(accepted_paths),
+        "rejected_files": len(rejected_images),
         "unique_images": len(groups),
         "duplicate_files": duplicate_files,
         "exact_unique_images": exact_unique_images,
@@ -311,10 +371,13 @@ def prepare_splits(config: dict[str, Any], force: bool = False) -> dict[str, Any
         "settings": split_settings,
         "summary": {
             "total_files": len(image_paths),
+            "accepted_files": len(accepted_paths),
+            "rejected_files": len(rejected_images),
             "exact_duplicate_files": exact_duplicate_files,
             "near_duplicate_files": near_duplicate_files,
             "retained_images": len(groups),
         },
+        "rejected_images": rejected_images,
         "near_duplicate_matches": near_matches,
         "clusters": [
             {

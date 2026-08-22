@@ -53,6 +53,7 @@ evaluate.py 的 FID 计算中，reference 侧和生成侧都只有 800 张（tes
 ## 二、新数据集情况（bchao1/Anime-Face-Dataset）
 
 ### 2.1 基本信息
+项目仓库地址：https://github.com/bchao1/Anime-Face-Dataset.git
 
 | 项目 | 内容 |
 | --- | --- |
@@ -62,7 +63,7 @@ evaluate.py 的 FID 计算中，reference 侧和生成侧都只有 800 张（tes
 | 质量 | 作者宣称"high quality"：干净背景、色彩丰富，优于杂乱的 Danbooru 系 |
 | 已知问题 | 少量坏裁剪、少量非人脸离群图 |
 | 格式 | Kaggle 打包版为 PNG（数字命名，`images/` 目录）；GitHub 原始抓取脚本产物为 JPG（`src/cropped/`） |
-| 获取 | 具体数据集已放入目录：Data/train/64k |
+| 获取 | 具体数据集已放入目录：Data/train/64k，该数据是从kaggle上下载的|
 
 
 ### 2.2 与旧数据集对比

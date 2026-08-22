@@ -25,26 +25,67 @@ def load_config(config_path: str | Path = "config/default.yaml") -> dict[str, An
 
     config = deepcopy(config)
     config["_config_path"] = str(path)
-    for section, keys in {
-        "data": ("raw_dir", "split_dir"),
-        "paths": (
-            "output_dir",
-            "checkpoint_dir",
-            "sample_dir",
-            "plot_dir",
-            "evaluation_dir",
-            "log_dir",
-        ),
-    }.items():
-        for key in keys:
-            value = Path(config[section][key])
-            config[section][key] = str(value if value.is_absolute() else PROJECT_ROOT / value)
+    data_config = config["data"]
+    if "raw_dirs" in data_config:
+        raw_dirs = data_config["raw_dirs"]
+        if not isinstance(raw_dirs, list) or not raw_dirs:
+            raise ValueError("data.raw_dirs 必须是非空路径列表")
+        data_config["raw_dirs"] = [
+            str(value if value.is_absolute() else PROJECT_ROOT / value)
+            for item in raw_dirs
+            for value in [Path(item)]
+        ]
+    elif "raw_dir" in data_config:
+        value = Path(data_config["raw_dir"])
+        data_config["raw_dir"] = str(
+            value if value.is_absolute() else PROJECT_ROOT / value
+        )
+    else:
+        raise ValueError("data 必须配置 raw_dir 或 raw_dirs")
+
+    split_dir = Path(data_config["split_dir"])
+    data_config["split_dir"] = str(
+        split_dir if split_dir.is_absolute() else PROJECT_ROOT / split_dir
+    )
+
+    for key in (
+        "output_dir",
+        "checkpoint_dir",
+        "sample_dir",
+        "plot_dir",
+        "evaluation_dir",
+        "log_dir",
+    ):
+        value = Path(config["paths"][key])
+        config["paths"][key] = str(
+            value if value.is_absolute() else PROJECT_ROOT / value
+        )
 
     validate_config(config)
     return config
 
 
 def validate_config(config: dict[str, Any]) -> None:
+    data_config = config["data"]
+    if "raw_dirs" in data_config:
+        raw_dirs = data_config["raw_dirs"]
+        if not isinstance(raw_dirs, list) or not raw_dirs:
+            raise ValueError("data.raw_dirs 必须是非空路径列表")
+        if len({str(Path(path).resolve()) for path in raw_dirs}) != len(raw_dirs):
+            raise ValueError("data.raw_dirs 不能包含重复目录")
+    elif "raw_dir" not in data_config:
+        raise ValueError("data 必须配置 raw_dir 或 raw_dirs")
+    if int(data_config.get("min_source_size", data_config["image_size"])) <= 0:
+        raise ValueError("data.min_source_size 必须大于 0")
+    extensions = data_config.get("image_extensions", [".png"])
+    if not isinstance(extensions, list) or not extensions:
+        raise ValueError("data.image_extensions 必须是非空扩展名列表")
+    if any(
+        not isinstance(value, str) or not value.startswith(".")
+        for value in extensions
+    ):
+        raise ValueError("data.image_extensions 必须使用以点开头的扩展名")
+
     ratios = [config["data"][f"{name}_ratio"] for name in ("train", "val", "test")]
     if any(ratio <= 0 for ratio in ratios) or abs(sum(ratios) - 1.0) > 1e-8:
         raise ValueError("train_ratio、val_ratio、test_ratio 必须大于 0 且总和为 1")
@@ -110,6 +151,14 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("evaluation.kid_subsets 必须大于 0")
     if config["evaluation"]["kid_subset_size"] < 2:
         raise ValueError("evaluation.kid_subset_size 必须至少为 2")
+    if int(config["evaluation"].get("num_generated", 1)) <= 0:
+        raise ValueError("evaluation.num_generated 必须大于 0")
+    if config["evaluation"].get("real_split", "test") not in {
+        "train",
+        "val",
+        "test",
+    }:
+        raise ValueError("evaluation.real_split 必须是 train、val 或 test")
     for key in ("validate_every_epochs", "sample_every_epochs", "save_every_epochs"):
         if config["training"][key] <= 0:
             raise ValueError(f"training.{key} 必须大于 0")

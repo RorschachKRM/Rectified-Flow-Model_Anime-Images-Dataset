@@ -30,7 +30,10 @@ class AnimeImageDataset(Dataset[torch.Tensor]):
         if not self.image_paths:
             raise ValueError(f"数据清单为空: {self.manifest_path}")
 
-        operations: list[Any] = [transforms.Resize((image_size, image_size))]
+        operations: list[Any] = [
+            transforms.Resize(image_size, antialias=True),
+            transforms.CenterCrop(image_size),
+        ]
         if train:
             operations.append(transforms.RandomHorizontalFlip())
         operations.extend(

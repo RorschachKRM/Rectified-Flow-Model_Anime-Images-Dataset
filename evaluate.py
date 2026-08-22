@@ -45,10 +45,17 @@ def _distribution_metrics(
     loader: DataLoader[torch.Tensor],
     config: dict[str, Any],
     device: torch.device,
-) -> tuple[float, float, float, int]:
+) -> tuple[float, float, float, int, int]:
     evaluation_config = config["evaluation"]
-    total_images = len(loader.dataset)
-    kid_subset_size = min(int(evaluation_config["kid_subset_size"]), total_images)
+    total_real_images = len(loader.dataset)
+    total_generated_images = int(
+        evaluation_config.get("num_generated", total_real_images)
+    )
+    kid_subset_size = min(
+        int(evaluation_config["kid_subset_size"]),
+        total_real_images,
+        total_generated_images,
+    )
     fid = FrechetInceptionDistance(feature=2048, normalize=True).to(device)
     kid = KernelInceptionDistance(
         feature=2048,
@@ -65,8 +72,8 @@ def _distribution_metrics(
     generator = torch.Generator(device=device).manual_seed(
         int(evaluation_config["generation_seed"])
     )
-    remaining = total_images
-    progress = tqdm(total=total_images, desc="Generated features")
+    remaining = total_generated_images
+    progress = tqdm(total=total_generated_images, desc="Generated features")
     while remaining > 0:
         batch_size = min(int(evaluation_config["batch_size"]), remaining)
         noise = torch.randn(
@@ -92,7 +99,13 @@ def _distribution_metrics(
     fid_value = float(fid.compute().cpu())
     seed_everything(int(evaluation_config["metric_seed"]))
     kid_mean, kid_std = kid.compute()
-    return fid_value, float(kid_mean.cpu()), float(kid_std.cpu()), total_images
+    return (
+        fid_value,
+        float(kid_mean.cpu()),
+        float(kid_std.cpu()),
+        total_real_images,
+        total_generated_images,
+    )
 
 
 @torch.no_grad()
@@ -121,9 +134,19 @@ def main() -> None:
         use_ema=not args.model_weights,
     )
 
-    original_test_loader = build_dataloaders(config)["test"]
+    loaders = build_dataloaders(config)
+    original_test_loader = loaders["test"]
     test_loader = DataLoader(
         original_test_loader.dataset,
+        batch_size=int(config["evaluation"]["batch_size"]),
+        shuffle=False,
+        num_workers=int(config["data"]["num_workers"]),
+        pin_memory=device.type == "cuda",
+    )
+    real_split = str(config["evaluation"].get("real_split", "test"))
+    original_real_loader = loaders[real_split]
+    real_loader = DataLoader(
+        original_real_loader.dataset,
         batch_size=int(config["evaluation"]["batch_size"]),
         shuffle=False,
         num_workers=int(config["data"]["num_workers"]),
@@ -136,6 +159,7 @@ def main() -> None:
         "num_steps": int(config["sampling"]["num_steps"]),
         "validation_seed": int(config["evaluation"]["validation_seed"]),
         "generation_seed": int(config["evaluation"]["generation_seed"]),
+        "real_split": real_split,
         "flow_mse": _flow_mse(
             flow,
             test_loader,
@@ -146,10 +170,11 @@ def main() -> None:
     if bool(config["evaluation"]["calculate_fid"]) or bool(
         config["evaluation"]["calculate_kid"]
     ):
-        fid, kid_mean, kid_std, sample_count = _distribution_metrics(
-            flow, test_loader, config, device
+        fid, kid_mean, kid_std, real_count, generated_count = _distribution_metrics(
+            flow, real_loader, config, device
         )
-        results["num_samples"] = sample_count
+        results["num_real_samples"] = real_count
+        results["num_generated_samples"] = generated_count
         if bool(config["evaluation"]["calculate_fid"]):
             results["fid"] = fid
         if bool(config["evaluation"]["calculate_kid"]):

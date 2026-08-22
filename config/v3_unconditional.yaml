@@ -1,0 +1,87 @@
+project:
+  name: rectified-flow-anime-v3.0-unconditional
+  version: "3.0"
+  seed: 42
+
+data:
+  # 年份数据提供较清晰的高分辨率头像，颜色数据提供额外的 64x64 分布。
+  raw_dirs:
+    - Data/train/64k
+    - Data/train/anime_generation_color/images
+  split_dir: datasets/splits_v3_0_unconditional
+  image_extensions: [.jpg, .jpeg, .png]
+  image_size: 64
+  min_source_size: 64
+  train_ratio: 0.85
+  val_ratio: 0.05
+  test_ratio: 0.10
+  remove_exact_duplicates: true
+  # 当前中心裁剪 pHash 会误合并不同角色，V3.0 只做可靠的精确去重。
+  remove_near_duplicates: false
+  phash_size: 8
+  phash_threshold: 3
+  phash_crop_ratios: [0.9]
+  split_seed: 42
+  auto_prepare: true
+  horizontal_flip: true
+  num_workers: 4
+
+model:
+  in_channels: 3
+  out_channels: 3
+  base_channels: 96
+  channel_multipliers: [1, 2, 4, 4]
+  num_res_blocks: 2
+  time_embedding_dim: 384
+  dropout: 0.05
+  attention_resolutions: [16, 8]
+  attention_num_heads: 8
+  attention_dropout: 0.0
+
+training:
+  device: auto
+  epochs: 60
+  batch_size: 16
+  gradient_accumulation_steps: 2
+  learning_rate: 0.0002
+  scheduler:
+    name: cosine
+    min_learning_rate: 0.000001
+  ema_decay: 0.9999
+  weight_decay: 0.0001
+  mixed_precision: true
+  gradient_clip: 1.0
+  log_every_steps: 50
+  validate_every_epochs: 1
+  sample_every_epochs: 5
+  save_every_epochs: 20
+  # 目录与旧版本隔离；首次运行从头训练，中断后只恢复 V3.0。
+  resume: true
+
+sampling:
+  solver: heun
+  num_steps: 50
+  num_samples: 16
+  trajectory_frames: 9
+  trajectory_samples: 8
+
+evaluation:
+  preview_seed: 42
+  validation_seed: 2026
+  generation_seed: 2026
+  metric_seed: 2026
+  batch_size: 16
+  real_split: test
+  num_generated: 10000
+  calculate_fid: true
+  calculate_kid: true
+  kid_subsets: 50
+  kid_subset_size: 1000
+
+paths:
+  output_dir: outputs/v3_0_unconditional
+  checkpoint_dir: outputs/v3_0_unconditional/checkpoints
+  sample_dir: outputs/v3_0_unconditional/samples
+  plot_dir: outputs/v3_0_unconditional/plots
+  evaluation_dir: outputs/v3_0_unconditional/evaluation
+  log_dir: runs/rectified_flow_v3_0_unconditional
